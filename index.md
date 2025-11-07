@@ -1,3 +1,3 @@
-Principal Consultant
-Data & Analytics
+Principal Consultant  
+Data & Analytics  
 Avaap
