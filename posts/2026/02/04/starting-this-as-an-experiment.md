@@ -1,0 +1,1 @@
+Starting this as an experiment. Not sure if this will be a collection of shower thoughts, a commentary on topics which interest me, a journal, a photo blog, or something completely different. Only time will tell.

@@ -1,0 +1,3 @@
+Joan Westenberg [writes](https://www.joanwestenberg.com/members-only-wont-fix-self-help/):
+
+> Most of the things you're trying to fix about yourself are only problems relative to some imagined ideal of a person you were never going to be. Your distractibility is a bug in the "focused knowledge worker" spec but might be a feature in the "person who notices interesting things and connects them unexpectedly" spec. Your sensitivity and your stubbornness, your tendency to monologue about niche topics at parties: all Won't Fix, and all load-bearing, and all probably okay in the big, heat-death-of-the-universe scheme of all things.
