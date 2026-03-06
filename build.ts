@@ -557,7 +557,7 @@ const template = (
     </main>
     <footer>
       ${!isIndex && showBackToPostsLink ? `<p><a href="${rootPath}/">← Back to all posts</a></p>` : ''}
-      <p>Built with love and markdown · <a href="https://github.com/amitkathuria/amitkathuria.github.io">Source</a> · <a href="${siteUrl}/feed.xml">RSS</a></p>
+      <p>Built with love and markdown · <a href="https://github.com/amitkathuria/amitkathuria.github.io">Source</a></p>
     </footer>
   </div>
 </body>
