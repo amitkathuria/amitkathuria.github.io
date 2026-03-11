@@ -183,7 +183,7 @@ const template = (
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="icon" type="image/svg+xml" href="${rootPath}/favicon.svg">
+  <link rel="icon" type="image/png" href="${rootPath}/favicon.png">
   <title>${fullTitle}</title>
   <meta name="description" content="${description}">
   
@@ -715,8 +715,8 @@ async function build() {
   }
   
   // Copy favicon
-  await copyFile('./favicon.svg', join(OUTPUT_DIR, 'favicon.svg'));
-  console.log('  ✓ favicon.svg\n');
+  await copyFile('./favicon.png', join(OUTPUT_DIR, 'favicon.png'));
+  console.log('  ✓ favicon.png\n');
   
   console.log(`✨ Built ${posts.length} post(s)${pageCount > 0 ? ` and ${pageCount} page(s)` : ''} to ${OUTPUT_DIR}/`);
   console.log('   Open _site/index.html in a browser to view!');
