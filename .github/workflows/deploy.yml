@@ -5,6 +5,9 @@ on:
     branches:
       - main
   workflow_dispatch:
+  schedule:
+    - cron: '0 7 * * *'
+    - cron: '0 8 * * *'
 
 permissions:
   contents: read
@@ -18,28 +21,95 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.schedule_gate.outputs.should_run }}
+      site_changed: ${{ steps.change.outputs.site_changed }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Gate Scheduled Run To 3 AM New York
+        id: schedule_gate
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" != "schedule" ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          local_hour="$(TZ=America/New_York date +%H)"
+          if [[ "$local_hour" == "03" ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore Mastodon Build Cache
+        id: cache_restore
+        if: steps.schedule_gate.outputs.should_run == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache
+          key: site-cache-${{ runner.os }}-bootstrap
+          restore-keys: |
+            site-cache-${{ runner.os }}-
+
       - name: Setup Bun
+        if: steps.schedule_gate.outputs.should_run == 'true'
         uses: oven-sh/setup-bun@v2
 
       - name: Build Site
+        if: steps.schedule_gate.outputs.should_run == 'true'
         run: |
           bun install --frozen-lockfile
-          bun build.ts
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            MASTODON_FORCE_REFRESH=1 bun build.ts
+          else
+            bun build.ts
+          fi
+
+      - name: Determine Site Change
+        id: change
+        if: steps.schedule_gate.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          mkdir -p .cache
+
+          previous_hash=""
+          if [[ -f .cache/site.sha256 ]]; then
+            previous_hash="$(tr -d '\n\r' < .cache/site.sha256)"
+          fi
+
+          current_hash="$(find _site -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | awk '{print $1}')"
+          printf '%s' "$current_hash" > .cache/site.sha256
+
+          echo "site_hash=$current_hash" >> "$GITHUB_OUTPUT"
+          if [[ -n "$previous_hash" && "$current_hash" == "$previous_hash" ]]; then
+            echo "site_changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "site_changed=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup Pages
+        if: steps.schedule_gate.outputs.should_run == 'true' && steps.change.outputs.site_changed == 'true'
         uses: actions/configure-pages@v5
 
       - name: Upload Artifact
+        if: steps.schedule_gate.outputs.should_run == 'true' && steps.change.outputs.site_changed == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
 
+      - name: Save Mastodon Build Cache
+        if: steps.schedule_gate.outputs.should_run == 'true' && steps.change.outputs.site_hash != '' && steps.cache_restore.outputs.cache-matched-key != format('site-cache-{0}-{1}', runner.os, steps.change.outputs.site_hash)
+        uses: actions/cache/save@v4
+        with:
+          path: .cache
+          key: site-cache-${{ runner.os }}-${{ steps.change.outputs.site_hash }}
+
   deploy:
     needs: build
+    if: needs.build.outputs.should_run == 'true' && needs.build.outputs.site_changed == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

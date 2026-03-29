@@ -6,20 +6,35 @@
  * Usage: bun build.ts
  */
 
-import { readdir, readFile, writeFile, mkdir, copyFile } from 'fs/promises';
-import { join, basename, relative, dirname } from 'path';
+import { readdir, readFile, writeFile, mkdir, copyFile, rm } from 'fs/promises';
+import { join, basename, dirname, extname } from 'path';
 import { marked } from 'marked';
+import sanitizeHtml from 'sanitize-html';
+import { decode } from 'he';
 import { existsSync } from 'fs';
 
-const POSTS_DIR = './posts';
 const PAGES_DIR = './pages';
 const OUTPUT_DIR = './_site';
 const CNAME_FILE = './CNAME';
+const CACHE_DIR = './.cache';
+const MASTODON_STATUSES_CACHE_FILE = join(CACHE_DIR, 'mastodon-statuses.json');
+const MASTODON_STATUSES_META_FILE = join(CACHE_DIR, 'mastodon-statuses.meta.json');
+const MASTODON_MEDIA_CACHE_DIR = join(CACHE_DIR, 'mastodon-media');
+const OUTPUT_MEDIA_DIR = join(OUTPUT_DIR, 'media');
 const DEFAULT_SITE_URL = 'https://amitkathuria.github.io';
+const MASTODON_BASE_URL = (process.env.MASTODON_BASE_URL?.trim() || 'https://mastodon.social').replace(/\/$/, '');
+const MASTODON_ACCOUNT_ACCT = process.env.MASTODON_ACCOUNT_ACCT?.trim() || 'amitkathuria';
+const MASTODON_PAGE_SIZE = 40;
+const MASTODON_MAX_POSTS = 200;
+const MASTODON_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const POSTS_PER_PAGE = 5;
+const FORCE_REFRESH = process.env.MASTODON_FORCE_REFRESH === '1';
 const SITE_DESCRIPTION = 'A personal blog where I share thoughts and reflections on technology, philosophy, art, and everyday life.';
 
 interface Post {
+  statusId: string;
   slug: string;
+  sourceUrl: string;
   date: string;
   displayDate: string;
   datetime: string;
@@ -27,6 +42,37 @@ interface Post {
   blurb: string;
   content: string;
   html: string;
+}
+
+interface CachedFeedMeta {
+  fetchedAt: string;
+}
+
+interface ParsedFeed {
+  posts: Post[];
+  lastBuildDate: string | null;
+}
+
+interface MastodonAccountLookupResponse {
+  id: string;
+}
+
+interface MastodonMediaAttachment {
+  type?: string;
+  url?: string | null;
+  preview_url?: string | null;
+  description?: string | null;
+}
+
+interface MastodonStatus {
+  id: string;
+  url?: string | null;
+  created_at: string;
+  content: string;
+  visibility?: string;
+  in_reply_to_id?: string | null;
+  reblog?: unknown | null;
+  media_attachments?: MastodonMediaAttachment[];
 }
 
 function formatDateDisplay(date: Date): string {
@@ -38,21 +84,17 @@ function formatDateDisplay(date: Date): string {
   }).format(date);
 }
 
-function parseDateFromMetaOrPath(metaDate: string | undefined, relativePostPath: string): Date | null {
-  if (metaDate) {
-    const parsed = new Date(metaDate);
-    if (!Number.isNaN(parsed.getTime())) return parsed;
-  }
+function truncateText(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) return normalized;
 
-  const pathMatch = relativePostPath.match(/^(\d{4})\/(\d{2})\/(\d{2})\//);
-  if (!pathMatch) return null;
+  const candidate = normalized.slice(0, maxLength + 1);
+  const lastSpaceIndex = candidate.lastIndexOf(' ');
+  const truncated = lastSpaceIndex > maxLength * 0.6
+    ? candidate.slice(0, lastSpaceIndex)
+    : normalized.slice(0, maxLength);
 
-  const year = parseInt(pathMatch[1], 10);
-  const month = parseInt(pathMatch[2], 10) - 1;
-  const day = parseInt(pathMatch[3], 10);
-
-  // Use noon UTC to avoid timezone edge cases around midnight.
-  return new Date(Date.UTC(year, month, day, 12, 0, 0));
+  return `${truncated.trimEnd()} ...`;
 }
 
 function plainTextFromHtml(html: string): string {
@@ -64,18 +106,7 @@ function plainTextFromHtml(html: string): string {
 }
 
 function decodeHtmlEntities(value: string): string {
-  return value
-    .replace(/&amp;/g, '&')
-    .replace(/&#x27;/gi, "'")
-    .replace(/&#39;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&rsquo;/g, "'")
-    .replace(/&lsquo;/g, "'")
-    .replace(/&ldquo;/g, '"')
-    .replace(/&rdquo;/g, '"')
-    .replace(/&hellip;/g, '...');
+  return value ? decode(value) : '';
 }
 
 function escapeHtml(value: string): string {
@@ -117,22 +148,6 @@ function getRootPathFromSlug(slug: string): string {
   return depth === 0 ? '.' : new Array(depth).fill('..').join('/');
 }
 
-async function getMarkdownFilesRecursive(dir: string): Promise<string[]> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  const files: string[] = [];
-
-  for (const entry of entries) {
-    const fullPath = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...await getMarkdownFilesRecursive(fullPath));
-    } else if (entry.isFile() && entry.name.endsWith('.md')) {
-      files.push(fullPath);
-    }
-  }
-
-  return files;
-}
-
 function normalizeSiteUrl(urlOrHost: string): string {
   const trimmed = urlOrHost.trim().replace(/\/$/, '');
   if (!trimmed) return DEFAULT_SITE_URL;
@@ -145,6 +160,317 @@ async function resolveSiteUrl(): Promise<string> {
 
   const cnameValue = (await readFile(CNAME_FILE, 'utf-8')).trim();
   return normalizeSiteUrl(cnameValue);
+}
+
+function sanitizePostHtml(html: string): string {
+  if (!html) return '';
+
+  return sanitizeHtml(html, {
+    allowedTags: sanitizeHtml.defaults.allowedTags.concat(['img', 'video', 'source']),
+    allowedAttributes: {
+      ...sanitizeHtml.defaults.allowedAttributes,
+      a: ['href', 'name', 'target', 'rel', 'translate'],
+      span: ['class'],
+      img: ['src', 'alt', 'title', 'loading'],
+      video: ['src', 'controls', 'preload', 'poster'],
+      source: ['src', 'type']
+    },
+    allowedSchemes: ['http', 'https', 'mailto'],
+    transformTags: {
+      a: (_tagName, attribs) => {
+        const relValues = new Set((attribs.rel ?? '').split(/\s+/).filter(Boolean));
+        relValues.add('noopener');
+        relValues.add('noreferrer');
+        return {
+          tagName: 'a',
+          attribs: {
+            ...attribs,
+            rel: Array.from(relValues).join(' ')
+          }
+        };
+      }
+    }
+  }).trim();
+}
+
+function buildPostBlurb(html: string): string {
+  const source = plainTextFromHtml(html);
+  return source ? truncateText(source, 180) : '';
+}
+
+function buildPageTitle(post: Post): string {
+  return truncateText(post.blurb || post.displayDate, 72);
+}
+
+function asArray<T>(value: T | T[] | undefined): T[] {
+  if (!value) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function extractStatusId(sourceUrl: string): string | null {
+  const match = sourceUrl.match(/\/(\d+)(?:\?.*)?$/);
+  return match?.[1] ?? null;
+}
+
+function normalizeFileExtension(value: string): string {
+  return /^\.[a-z0-9]{1,8}$/i.test(value) ? value.toLowerCase() : '';
+}
+
+function inferMediaExtension(sourceUrl: string, contentType: string | null, mediaType: string, responseUrl?: string): string {
+  for (const candidateUrl of [responseUrl, sourceUrl]) {
+    if (!candidateUrl) continue;
+
+    try {
+      const extension = normalizeFileExtension(extname(new URL(candidateUrl).pathname));
+      if (extension) return extension;
+    } catch {
+      // Ignore malformed URLs and fall back to content type based detection.
+    }
+  }
+
+  const normalizedContentType = (contentType ?? '').split(';')[0].trim().toLowerCase();
+  const extensionByContentType: Record<string, string> = {
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+    'image/gif': '.gif',
+    'image/avif': '.avif',
+    'video/mp4': '.mp4',
+    'video/webm': '.webm',
+    'video/quicktime': '.mov'
+  };
+
+  if (extensionByContentType[normalizedContentType]) {
+    return extensionByContentType[normalizedContentType];
+  }
+
+  if (mediaType === 'video' || mediaType === 'gifv' || mediaType.startsWith('video/')) {
+    return '.mp4';
+  }
+
+  return '.jpg';
+}
+
+async function findCachedMediaFilename(baseName: string): Promise<string | null> {
+  if (!existsSync(MASTODON_MEDIA_CACHE_DIR)) return null;
+
+  const entries = await readdir(MASTODON_MEDIA_CACHE_DIR);
+  return entries.find(entry => entry === baseName || entry.startsWith(`${baseName}.`)) ?? null;
+}
+
+async function copyCachedMediaToOutput(filename: string): Promise<string> {
+  await mkdir(OUTPUT_MEDIA_DIR, { recursive: true });
+  await copyFile(join(MASTODON_MEDIA_CACHE_DIR, filename), join(OUTPUT_MEDIA_DIR, filename));
+  return `/media/${filename}`;
+}
+
+async function resolveMediaAssetUrl(statusId: string, mediaIndex: number, sourceUrl: string, mediaType: string): Promise<string> {
+  const baseName = `${statusId}-${mediaIndex}`;
+  const cachedFilename = await findCachedMediaFilename(baseName);
+
+  if (cachedFilename) {
+    return copyCachedMediaToOutput(cachedFilename);
+  }
+
+  try {
+    const response = await fetch(sourceUrl);
+    if (!response.ok) {
+      throw new Error(`${response.status} ${response.statusText}`);
+    }
+
+    const extension = inferMediaExtension(sourceUrl, response.headers.get('content-type'), mediaType, response.url);
+    const filename = `${baseName}${extension}`;
+
+    await mkdir(MASTODON_MEDIA_CACHE_DIR, { recursive: true });
+    await writeFile(join(MASTODON_MEDIA_CACHE_DIR, filename), new Uint8Array(await response.arrayBuffer()));
+
+    return copyCachedMediaToOutput(filename);
+  } catch (error) {
+    console.warn(`  ! Unable to cache Mastodon media for status ${statusId}: ${error instanceof Error ? error.message : String(error)}`);
+    return sourceUrl;
+  }
+}
+
+async function buildMediaAttachmentHtml(status: MastodonStatus): Promise<string> {
+  const mediaHtml = await Promise.all(asArray(status.media_attachments).map(async (media, mediaIndex) => {
+    const sourceUrl = media.url?.trim() || media.preview_url?.trim();
+    if (!sourceUrl) return '';
+
+    const type = media.type?.trim() ?? '';
+    const description = media.description?.trim() ?? '';
+    const resolvedUrl = await resolveMediaAssetUrl(status.id, mediaIndex, sourceUrl, type);
+    const escapedUrl = escapeHtml(resolvedUrl);
+    const escapedDescription = escapeHtml(description || 'Mastodon media attachment');
+
+    if (type === 'image' || type.startsWith('image/')) {
+      return `<p><img src="${escapedUrl}" alt="${escapedDescription}" loading="lazy"></p>`;
+    }
+
+    if (type === 'video' || type === 'gifv' || type.startsWith('video/')) {
+      return `<p><video controls preload="metadata" src="${escapedUrl}"></video></p>`;
+    }
+
+    return '';
+  }));
+
+  return mediaHtml.filter(Boolean).join('\n');
+}
+
+async function normalizeMastodonStatusToPost(status: MastodonStatus): Promise<Post | null> {
+  if (status.visibility !== 'public') return null;
+  if (status.in_reply_to_id || status.reblog) return null;
+
+  const sourceUrl = status.url?.trim() || `${MASTODON_BASE_URL}/@${MASTODON_ACCOUNT_ACCT}/${status.id}`;
+  const parsedDate = new Date(status.created_at);
+  if (Number.isNaN(parsedDate.getTime())) return null;
+
+  const descriptionHtml = sanitizePostHtml(status.content ?? '');
+  const mediaHtml = await buildMediaAttachmentHtml(status);
+  const html = sanitizePostHtml([descriptionHtml, mediaHtml].filter(Boolean).join('\n'));
+  if (!html) return null;
+
+  return {
+    statusId: status.id,
+    slug: status.id,
+    sourceUrl,
+    date: parsedDate.toISOString(),
+    displayDate: formatDateDisplay(parsedDate),
+    datetime: parsedDate.toISOString(),
+    sortTime: parsedDate.getTime(),
+    blurb: buildPostBlurb(html),
+    content: plainTextFromHtml(html),
+    html
+  };
+}
+
+async function parseMastodonStatuses(statuses: MastodonStatus[]): Promise<ParsedFeed> {
+  const posts: Post[] = [];
+
+  for (const status of statuses) {
+    const post = await normalizeMastodonStatusToPost(status);
+    if (post) posts.push(post);
+  }
+
+  return { posts, lastBuildDate: statuses[0]?.created_at ?? null };
+}
+
+function absolutizeMediaUrls(html: string, siteUrl: string): string {
+  return html.replace(/(<(?:img|video|source)\b[^>]*\s(?:src|poster)=["'])\/([^"']+)(["'])/g, `$1${siteUrl}/$2$3`);
+}
+
+function extractLocalMediaFilenames(html: string): string[] {
+  return Array.from(html.matchAll(/\/media\/([^"'\s>]+)/g), match => match[1]);
+}
+
+async function emitCachedMediaForPosts(posts: Post[]): Promise<number> {
+  const filenames = new Set(posts.flatMap(post => extractLocalMediaFilenames(post.html)));
+  let copiedCount = 0;
+
+  for (const filename of filenames) {
+    if (!existsSync(join(MASTODON_MEDIA_CACHE_DIR, filename))) {
+      console.warn(`  ! Expected cached media file is missing: ${filename}`);
+      continue;
+    }
+
+    await copyCachedMediaToOutput(filename);
+    copiedCount++;
+  }
+
+  return copiedCount;
+}
+
+async function readCachedStatuses(): Promise<{ statuses: MastodonStatus[]; fetchedAt: number } | null> {
+  if (!existsSync(MASTODON_STATUSES_CACHE_FILE) || !existsSync(MASTODON_STATUSES_META_FILE)) {
+    return null;
+  }
+
+  try {
+    const [statusesRaw, metaRaw] = await Promise.all([
+      readFile(MASTODON_STATUSES_CACHE_FILE, 'utf-8'),
+      readFile(MASTODON_STATUSES_META_FILE, 'utf-8')
+    ]);
+    const meta = JSON.parse(metaRaw) as CachedFeedMeta;
+    const statuses = JSON.parse(statusesRaw) as MastodonStatus[];
+    const fetchedAt = new Date(meta.fetchedAt).getTime();
+
+    if (Number.isNaN(fetchedAt)) return null;
+    return { statuses, fetchedAt };
+  } catch {
+    return null;
+  }
+}
+
+async function writeCachedStatuses(statuses: MastodonStatus[]): Promise<void> {
+  await mkdir(CACHE_DIR, { recursive: true });
+  const meta: CachedFeedMeta = { fetchedAt: new Date().toISOString() };
+
+  await Promise.all([
+    writeFile(MASTODON_STATUSES_CACHE_FILE, JSON.stringify(statuses, null, 2)),
+    writeFile(MASTODON_STATUSES_META_FILE, JSON.stringify(meta, null, 2))
+  ]);
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const response = await fetch(url, {
+    headers: {
+      accept: 'application/json'
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Unable to fetch Mastodon data (${response.status} ${response.statusText}) from ${url}`);
+  }
+
+  return response.json() as Promise<T>;
+}
+
+async function fetchMastodonStatuses(): Promise<MastodonStatus[]> {
+  const account = await fetchJson<MastodonAccountLookupResponse>(`${MASTODON_BASE_URL}/api/v1/accounts/lookup?acct=${encodeURIComponent(MASTODON_ACCOUNT_ACCT)}`);
+  const statuses: MastodonStatus[] = [];
+  let maxId: string | null = null;
+
+  while (statuses.length < MASTODON_MAX_POSTS) {
+    const params = new URLSearchParams({
+      exclude_replies: 'true',
+      exclude_reblogs: 'true',
+      limit: String(MASTODON_PAGE_SIZE)
+    });
+    if (maxId) params.set('max_id', maxId);
+
+    const page = await fetchJson<MastodonStatus[]>(`${MASTODON_BASE_URL}/api/v1/accounts/${account.id}/statuses?${params.toString()}`);
+    if (page.length === 0) break;
+
+    statuses.push(...page);
+    if (page.length < MASTODON_PAGE_SIZE) break;
+
+    maxId = page[page.length - 1]?.id ?? null;
+    if (!maxId) break;
+  }
+
+  return statuses.slice(0, MASTODON_MAX_POSTS);
+}
+
+async function loadMastodonStatuses(): Promise<{ statuses: MastodonStatus[]; source: 'cache' | 'network' | 'stale-cache' }> {
+  const cachedStatuses = await readCachedStatuses();
+  const cacheIsFresh = cachedStatuses && (Date.now() - cachedStatuses.fetchedAt) <= MASTODON_CACHE_TTL_MS;
+
+  if (cachedStatuses && cacheIsFresh && !FORCE_REFRESH) {
+    return { statuses: cachedStatuses.statuses, source: 'cache' };
+  }
+
+  try {
+    const statuses = await fetchMastodonStatuses();
+    await writeCachedStatuses(statuses);
+    return { statuses, source: 'network' };
+  } catch (error) {
+    if (cachedStatuses) {
+      console.warn(`  ! Mastodon API fetch failed, using cached statuses instead: ${error instanceof Error ? error.message : String(error)}`);
+      return { statuses: cachedStatuses.statuses, source: 'stale-cache' };
+    }
+
+    throw error;
+  }
 }
 
 // Simple frontmatter parser
@@ -161,6 +487,66 @@ function parseFrontmatter(content: string): { meta: Record<string, string>; body
   return { meta, body: match[2] };
 }
 
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+
+  return chunks;
+}
+
+function getHomePageFilename(pageNumber: number): string {
+  return pageNumber === 1 ? 'index.html' : `page-${pageNumber}.html`;
+}
+
+function getArchivePageFilename(pageNumber: number): string {
+  return pageNumber === 1 ? 'archive.html' : `archive-${pageNumber}.html`;
+}
+
+function getHomePageCanonicalPath(pageNumber: number): string {
+  return pageNumber === 1 ? '/' : `/${getHomePageFilename(pageNumber)}`;
+}
+
+function getArchivePageCanonicalPath(pageNumber: number): string {
+  return pageNumber === 1 ? '/archive.html' : `/${getArchivePageFilename(pageNumber)}`;
+}
+
+function getHomePageHref(pageNumber: number): string {
+  return pageNumber === 1 ? './' : `./${getHomePageFilename(pageNumber)}`;
+}
+
+function getArchivePageHref(pageNumber: number): string {
+  return `./${getArchivePageFilename(pageNumber)}`;
+}
+
+function renderPaginationNav(
+  currentPage: number,
+  totalPages: number,
+  hrefForPage: (pageNumber: number) => string,
+  previousLabel: string,
+  nextLabel: string
+): string {
+  if (totalPages <= 1) return '';
+
+  const previousLink = currentPage > 1
+    ? `<a class="pagination-prev" href="${hrefForPage(currentPage - 1)}">${previousLabel}</a>`
+    : '<span></span>';
+
+  const nextLink = currentPage < totalPages
+    ? `<a class="pagination-next" href="${hrefForPage(currentPage + 1)}">${nextLabel}</a>`
+    : '<span></span>';
+
+  return `
+    <nav class="pagination" aria-label="Pagination">
+      ${previousLink}
+      <span class="pagination-page">Page ${currentPage} of ${totalPages}</span>
+      ${nextLink}
+    </nav>
+  `;
+}
+
 // HTML template
 const template = (
   title: string,
@@ -171,12 +557,18 @@ const template = (
   image = '',
   canonicalPath = '/',
   rootPath = '.',
-  showBackToPostsLink = true
+  showBackToPostsLink = true,
+  canonicalUrl = ''
 ) => {
   const siteTitle = "Amit Kathuria";
   const fullTitle = isIndex ? siteTitle : `${title} - ${siteTitle}`;
   const description = blurb || SITE_DESCRIPTION;
   const shareImage = image || `${siteUrl}/share.png`;
+  const resolvedCanonicalUrl = canonicalUrl || `${siteUrl}${canonicalPath}`;
+  const escapedFullTitle = escapeHtml(fullTitle);
+  const escapedDescription = escapeHtml(description);
+  const escapedShareImage = escapeHtml(shareImage);
+  const escapedCanonicalUrl = escapeHtml(resolvedCanonicalUrl);
   
   return `<!DOCTYPE html>
 <html lang="en">
@@ -184,22 +576,23 @@ const template = (
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" type="image/png" href="${rootPath}/favicon.png">
-  <title>${fullTitle}</title>
-  <meta name="description" content="${description}">
+  <title>${escapedFullTitle}</title>
+  <meta name="description" content="${escapedDescription}">
+  <link rel="canonical" href="${escapedCanonicalUrl}">
   
   <!-- Open Graph / Facebook -->
   <meta property="og:type" content="website">
-  <meta property="og:title" content="${fullTitle}">
-  <meta property="og:description" content="${description}">
-  <meta property="og:image" content="${shareImage}">
-  <meta property="og:url" content="${siteUrl}${canonicalPath}">
+  <meta property="og:title" content="${escapedFullTitle}">
+  <meta property="og:description" content="${escapedDescription}">
+  <meta property="og:image" content="${escapedShareImage}">
+  <meta property="og:url" content="${escapedCanonicalUrl}">
   <meta property="og:site_name" content="${siteTitle}">
   
   <!-- Twitter -->
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="${fullTitle}">
-  <meta name="twitter:description" content="${description}">
-  <meta name="twitter:image" content="${shareImage}">
+  <meta name="twitter:title" content="${escapedFullTitle}">
+  <meta name="twitter:description" content="${escapedDescription}">
+  <meta name="twitter:image" content="${escapedShareImage}">
   
   <link rel="alternate" type="application/rss+xml" title="${siteTitle} RSS" href="${rootPath}/feed.xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -497,6 +890,12 @@ const template = (
       margin-bottom: 0;
     }
 
+    .post .e-content img {
+      max-width: min(100%, 22rem);
+      margin-left: auto;
+      margin-right: auto;
+    }
+
     .post.with-title h2 {
       margin: 0;
       font-size: 1.3rem;
@@ -522,6 +921,24 @@ const template = (
 
     .h-feed .p-summary {
       color: var(--text);
+    }
+
+    .pagination {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 1rem;
+      margin-top: 2rem;
+      font-size: 0.9rem;
+    }
+
+    .pagination-page {
+      color: #9a9a9a;
+      white-space: nowrap;
+    }
+
+    .pagination-next {
+      justify-self: end;
     }
 
     footer {
@@ -557,7 +974,7 @@ const template = (
     </main>
     <footer>
       ${!isIndex && showBackToPostsLink ? `<p><a href="${rootPath}/">← Back to all posts</a></p>` : ''}
-      <p>Built with love and markdown · <a href="https://github.com/amitkathuria/amitkathuria.github.io">Source</a></p>
+      <p>Built with Bun and the Mastodon API · <a href="https://github.com/amitkathuria/amitkathuria.github.io">Source</a></p>
     </footer>
   </div>
 </body>
@@ -565,15 +982,25 @@ const template = (
 }
 
 // RSS feed generator
-function generateRSS(posts: Post[], siteUrl: string): string {
-  const now = new Date().toUTCString();
+function wrapCdata(value: string): string {
+  return `<![CDATA[${value.replace(/\]\]>/g, ']]]]><![CDATA[>')}]]>`;
+}
+
+function generateRSS(posts: Post[], siteUrl: string, lastBuildDate: string | null): string {
+  const resolvedLastBuildDate = (() => {
+    const candidate = lastBuildDate ? new Date(lastBuildDate) : null;
+    if (candidate && !Number.isNaN(candidate.getTime())) return candidate.toUTCString();
+    if (posts[0]) return new Date(posts[0].datetime).toUTCString();
+    return new Date().toUTCString();
+  })();
+
   const items = posts.map(p => `
     <item>
-      <title><![CDATA[${p.displayDate}]]></title>
+      <title>${wrapCdata(buildPageTitle(p))}</title>
       <link>${siteUrl}/${p.slug}.html</link>
       <guid isPermaLink="true">${siteUrl}/${p.slug}.html</guid>
       <pubDate>${new Date(p.datetime).toUTCString()}</pubDate>
-      <description><![CDATA[${p.blurb || p.html.slice(0, 500)}]]></description>
+      <description>${wrapCdata(absolutizeMediaUrls(p.html, siteUrl))}</description>
     </item>`).join('\n');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -583,7 +1010,7 @@ function generateRSS(posts: Post[], siteUrl: string): string {
     <link>${siteUrl}</link>
     <description>${SITE_DESCRIPTION}</description>
     <language>en-us</language>
-    <lastBuildDate>${now}</lastBuildDate>
+    <lastBuildDate>${resolvedLastBuildDate}</lastBuildDate>
     <atom:link href="${siteUrl}/feed.xml" rel="self" type="application/rss+xml"/>
 ${items}
   </channel>
@@ -593,95 +1020,115 @@ ${items}
 async function build() {
   console.log('🐧 Building Amit\'s Blog...\n');
   const siteUrl = await resolveSiteUrl();
+  const { statuses, source: feedSource } = await loadMastodonStatuses();
+  const { posts, lastBuildDate } = await parseMastodonStatuses(statuses);
+  posts.sort((a, b) => b.sortTime - a.sortTime);
   
-  // Ensure output dir exists
-  if (!existsSync(OUTPUT_DIR)) {
-    await mkdir(OUTPUT_DIR, { recursive: true });
+  if (existsSync(OUTPUT_DIR)) {
+    await rm(OUTPUT_DIR, { recursive: true, force: true });
   }
-  
-  // Read all posts recursively so date-based folders are supported.
-  const mdFiles = await getMarkdownFilesRecursive(POSTS_DIR);
-  
-  const posts: Post[] = [];
-  
-  for (const file of mdFiles) {
-    const content = await readFile(file, 'utf-8');
-    const { meta, body } = parseFrontmatter(content);
-    const html = await marked(body);
-    const relativePath = relative(POSTS_DIR, file).split('\\').join('/');
-    const slug = relativePath.replace(/\.md$/, '');
-    const parsedDate = parseDateFromMetaOrPath(meta.date, relativePath);
-    const dateObj = parsedDate ?? new Date();
-    const displayDate = formatDateDisplay(dateObj);
-    const datetime = dateObj.toISOString();
-    
-    posts.push({
-      slug,
-      date: meta.date || displayDate,
-      displayDate,
-      datetime,
-      sortTime: dateObj.getTime(),
-      blurb: meta.blurb || '',
-      content: body,
-      html
-    });
-    
-    // Write individual post page
-    const postOutputPath = join(OUTPUT_DIR, `${slug}.html`);
-    await mkdir(dirname(postOutputPath), { recursive: true });
+  await mkdir(OUTPUT_DIR, { recursive: true });
+
+  console.log(`  ✓ Loaded Mastodon statuses from ${feedSource}`);
+
+  const emittedMediaCount = await emitCachedMediaForPosts(posts);
+  if (emittedMediaCount > 0) {
+    console.log(`  ✓ media/ (${emittedMediaCount} file${emittedMediaCount === 1 ? '' : 's'})`);
+  }
+
+  for (const post of posts) {
+    const postOutputPath = join(OUTPUT_DIR, `${post.slug}.html`);
 
     const postHtml = template(
-      displayDate,
-      `<article>
-        <p class="post-date"><time class="dt-published" datetime="${datetime}">${displayDate}</time></p>
-        ${html}
+      buildPageTitle(post),
+      `<article class="h-entry">
+        <p class="post-date"><a class="u-url" href="/${post.slug}.html"><time class="dt-published" datetime="${post.datetime}">${post.displayDate}</time></a></p>
+        <div class="e-content">${post.html}</div>
+        <p class="meta">Originally posted on <a class="u-syndication" href="${escapeHtml(post.sourceUrl)}" target="_blank" rel="noopener noreferrer">Mastodon</a></p>
       </article>`,
       siteUrl,
       false,
-      meta.blurb || '',
+      post.blurb,
       '',
-      `/${slug}.html`,
-      getRootPathFromSlug(slug),
+      `/${post.slug}.html`,
+      getRootPathFromSlug(post.slug),
       false
     );
-    
+
     await writeFile(postOutputPath, postHtml);
-    console.log(`  ✓ ${slug}.html`);
+    console.log(`  ✓ ${post.slug}.html`);
+  }
+
+  const paginatedPosts = chunkArray(posts, POSTS_PER_PAGE);
+  if (paginatedPosts.length === 0) {
+    paginatedPosts.push([]);
+  }
+
+  for (const [index, pagePosts] of paginatedPosts.entries()) {
+    const pageNumber = index + 1;
+    const filename = getHomePageFilename(pageNumber);
+    const indexContent = `
+      ${pagePosts.map(p => `
+          <div class="post h-entry">
+            <a href="./${p.slug}.html" class="post-date u-url"><time class="dt-published" datetime="${p.datetime}">${p.displayDate}</time></a>
+            <div class="e-content">${p.html}</div>
+          </div>
+        `).join('')}
+      ${pagePosts.length === 0 ? '<p>No posts yet. The blank page awaits...</p>' : ''}
+      ${renderPaginationNav(pageNumber, paginatedPosts.length, getHomePageHref, 'Newer Posts', 'Older Posts')}
+    `;
+
+    await writeFile(
+      join(OUTPUT_DIR, filename),
+      template(
+        pageNumber === 1 ? 'Home' : `Home - Page ${pageNumber}`,
+        indexContent,
+        siteUrl,
+        pageNumber === 1,
+        SITE_DESCRIPTION,
+        '',
+        getHomePageCanonicalPath(pageNumber),
+        '.',
+        false
+      )
+    );
+    console.log(`  ✓ ${filename}`);
+  }
+
+  for (const [index, pagePosts] of paginatedPosts.entries()) {
+    const pageNumber = index + 1;
+    const filename = getArchivePageFilename(pageNumber);
+    const archiveContent = `
+      <div class="h-feed">
+        ${pagePosts.map(p => `
+          <p class="h-entry">
+            <a href="./${p.slug}.html" class="u-url"><time class="dt-published" datetime="${p.datetime}">${p.datetime.slice(0, 10)}</time></a>:
+            <span class="p-summary">${escapeHtml(buildArchiveSummary(p))}</span>
+          </p>
+        `).join('')}
+      </div>
+      ${renderPaginationNav(pageNumber, paginatedPosts.length, getArchivePageHref, 'Newer Entries', 'Older Entries')}
+    `;
+
+    await writeFile(
+      join(OUTPUT_DIR, filename),
+      template(
+        pageNumber === 1 ? 'Archive' : `Archive - Page ${pageNumber}`,
+        archiveContent,
+        siteUrl,
+        false,
+        '',
+        '',
+        getArchivePageCanonicalPath(pageNumber),
+        '.',
+        false
+      )
+    );
+    console.log(`  ✓ ${filename}`);
   }
   
-  // Sort by date (newest first)
-  posts.sort((a, b) => b.sortTime - a.sortTime);
-  
-  // Build index
-  const indexContent = `
-    ${posts.map(p => `
-        <div class="post h-entry">
-          <a href="./${p.slug}.html" class="post-date u-url"><time class="dt-published" datetime="${p.datetime}">${p.displayDate}</time></a>
-          <div class="e-content">${p.html}</div>
-        </div>
-      `).join('')}
-    ${posts.length === 0 ? '<p>No posts yet. The blank page awaits...</p>' : ''}
-  `;
-  
-  await writeFile(join(OUTPUT_DIR, 'index.html'), template('Home', indexContent, siteUrl, true, SITE_DESCRIPTION, '', '/'));
-  console.log('  ✓ index.html');
-  
-  // Build archive page in microblog-style feed format.
-  const archiveContent = `
-    <div class="h-feed">
-      ${posts.map(p => `
-        <p class="h-entry">
-          <a href="./${p.slug}.html" class="u-url"><time class="dt-published" datetime="${p.datetime}">${p.datetime.slice(0, 10)}</time></a>:
-          <span class="p-summary">${escapeHtml(buildArchiveSummary(p))}</span>
-        </p>
-      `).join('')}
-    </div>
-  `;
-  await writeFile(join(OUTPUT_DIR, 'archive.html'), template('Archive', archiveContent, siteUrl, true, '', '', '/archive.html'));
-  console.log('  ✓ archive.html');
-  
   // Generate RSS feed
-  const rss = generateRSS(posts, siteUrl);
+  const rss = generateRSS(posts, siteUrl, lastBuildDate);
   await writeFile(join(OUTPUT_DIR, 'feed.xml'), rss);
   console.log('  ✓ feed.xml\n');
   

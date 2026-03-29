@@ -1,3 +1,5 @@
 _site/
+.cache/
 .DS_Store
 build.ts.backup-2026-03-05
+node_modules/
