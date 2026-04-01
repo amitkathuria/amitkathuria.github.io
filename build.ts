@@ -464,9 +464,13 @@ async function loadMastodonStatuses(): Promise<{ statuses: MastodonStatus[]; sou
     await writeCachedStatuses(statuses);
     return { statuses, source: 'network' };
   } catch (error) {
-    if (cachedStatuses) {
+    if (cachedStatuses && !FORCE_REFRESH) {
       console.warn(`  ! Mastodon API fetch failed, using cached statuses instead: ${error instanceof Error ? error.message : String(error)}`);
       return { statuses: cachedStatuses.statuses, source: 'stale-cache' };
+    }
+
+    if (cachedStatuses && FORCE_REFRESH) {
+      throw new Error(`Forced Mastodon refresh failed and stale cache fallback is disabled: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     throw error;
