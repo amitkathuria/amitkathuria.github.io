@@ -6,6 +6,7 @@ on:
       - main
   workflow_dispatch:
   schedule:
+    # 3 AM America/New_York year-round: 07:00 UTC during EDT, 08:00 UTC during EST.
     - cron: '0 7 * * *'
     - cron: '0 8 * * *'
 
@@ -28,17 +29,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Gate Scheduled Run To 3 AM New York
+      - name: Gate Scheduled Run To 3 AM America/New_York
         id: schedule_gate
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" != "schedule" ]]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          local_hour="$(TZ=America/New_York date +%H)"
-          if [[ "$local_hour" == "03" ]]; then
+          if [[ "${{ github.event_name }}" != "schedule" || "$(TZ=America/New_York date +%H)" == "03" ]]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
           else
             echo "should_run=false" >> "$GITHUB_OUTPUT"
