@@ -20,10 +20,11 @@ The build keeps a local Mastodon status cache in `.cache/`.
 - Set `MASTODON_FORCE_REFRESH=1` to force a live refresh.
 - If Mastodon is temporarily unavailable, non-forced builds fall back to the last successful cached response.
 
-GitHub Actions runs the refresh/deploy check every day at true `3:00 AM` Eastern using a DST-aware schedule.
+GitHub Actions schedules the refresh/deploy check daily around `3:00 AM` Eastern using a DST-aware cron cadence (`07:00` and `08:00` UTC).
 Scheduled runs force a live Mastodon refresh before hashing and deployment checks, and they fail instead of silently reusing stale statuses when Mastodon is unavailable.
 Other builds continue to use the 24-hour status cache.
 If the generated site is unchanged, the workflow stays green and skips Pages deployment.
+For stricter timing guarantees, trigger the workflow externally via `repository_dispatch`.
 
 ## Local Development
 
