@@ -1,0 +1,7 @@
+---
+layout: default
+---
+<article class="h-entry">
+  <p class="post-date"><a class="u-url" href="{{ page.url | relative_url }}"><time class="dt-published" datetime="{{ page.date | date_to_xmlschema }}">{{ page.date | date: "%b %-d, %Y" }}</time></a></p>
+  <div class="e-content">{{ content }}</div>
+</article>

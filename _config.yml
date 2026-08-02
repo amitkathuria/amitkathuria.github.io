@@ -1,0 +1,15 @@
+include: [".well-known"]
+
+title: Amit Kathuria
+description: A personal blog where I share thoughts and reflections on technology, philosophy, art, and everyday life.
+permalink: /:year-:month-:day-:title.html
+
+plugins:
+  - jekyll-feed
+
+defaults:
+  - scope:
+      path: ""
+      type: posts
+    values:
+      layout: post

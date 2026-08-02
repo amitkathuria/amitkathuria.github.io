@@ -1,0 +1,10 @@
+---
+layout: default
+---
+{% for post in site.posts %}
+<div class="post h-entry">
+  <a href="{{ post.url | relative_url }}" class="post-date u-url"><time class="dt-published" datetime="{{ post.date | date_to_xmlschema }}">{{ post.date | date: "%b %-d, %Y" }}</time></a>
+  <div class="e-content">{{ post.content }}</div>
+</div>
+{% endfor %}
+{% if site.posts.size == 0 %}<p>No posts yet. The blank page awaits...</p>{% endif %}

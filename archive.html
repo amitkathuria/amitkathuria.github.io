@@ -1,0 +1,13 @@
+---
+layout: default
+title: Archive
+permalink: /archive.html
+---
+<div class="h-feed">
+  {% for post in site.posts %}
+  <p class="h-entry">
+    <a href="{{ post.url | relative_url }}" class="u-url"><time class="dt-published" datetime="{{ post.date | date_to_xmlschema }}">{{ post.date | date: "%Y-%m-%d" }}</time></a>:
+    <span class="p-summary">{{ post.content | strip_html | strip_newlines | truncate: 80 }}</span>
+  </p>
+  {% endfor %}
+</div>

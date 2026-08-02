@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" type="image/png" href="{{ '/favicon.png' | relative_url }}">
+  <title>{% if page.title %}{{ page.title }} - {% endif %}{{ site.title }}</title>
+  {% assign page_description = page.excerpt | strip_html | strip_newlines | truncate: 160 %}
+  {% if page_description == "" %}{% assign page_description = site.description %}{% endif %}
+  <meta name="description" content="{{ page_description }}">
+  <link rel="canonical" href="{{ page.url | absolute_url }}">
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="{% if page.title %}{{ page.title }}{% else %}{{ site.title }}{% endif %}">
+  <meta property="og:description" content="{{ page_description }}">
+  <meta property="og:url" content="{{ page.url | absolute_url }}">
+  <meta property="og:site_name" content="{{ site.title }}">
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{% if page.title %}{{ page.title }}{% else %}{{ site.title }}{% endif %}">
+  <meta name="twitter:description" content="{{ page_description }}">
+
+  {% feed_meta %}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=PT+Sans:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --sidebar-bg: #202020;
+      --sidebar-fg: rgba(255, 255, 255, 0.72);
+      --sidebar-link: #ffffff;
+      --text: #515151;
+      --heading: #313131;
+      --accent: #268bd2;
+      --quote: #7a7a7a;
+      --quote-border: #e5e5e5;
+      --soft-bg: #f9f9f9;
+      --rule: #e5e5e5;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      font-family: "PT Sans", Helvetica, Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.5;
+    }
+
+    @media (min-width: 38em) {
+      html {
+        font-size: 20px;
+      }
+    }
+
+    @media (min-width: 48em) {
+      html {
+        font-size: 16px;
+      }
+    }
+
+    @media (min-width: 58em) {
+      html {
+        font-size: 20px;
+      }
+    }
+
+    body {
+      color: var(--text);
+      background: #ffffff;
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    a:hover,
+    a:focus {
+      text-decoration: underline;
+    }
+
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6 {
+      margin-bottom: 0.5rem;
+      font-weight: 700;
+      line-height: 1.25;
+      color: var(--heading);
+      text-rendering: optimizeLegibility;
+    }
+
+    h1 {
+      font-size: 2rem;
+    }
+
+    h2 {
+      margin-top: 1rem;
+      font-size: 1.5rem;
+    }
+
+    h3 {
+      margin-top: 1.5rem;
+      font-size: 1.25rem;
+    }
+
+    p,
+    ul,
+    ol,
+    dl {
+      margin-top: 0;
+      margin-bottom: 1rem;
+    }
+
+    strong {
+      color: #303030;
+    }
+
+    hr {
+      margin: 1.5rem 0;
+      border: 0;
+      border-top: 1px solid #eee;
+    }
+
+    code,
+    pre {
+      font-family: Menlo, Monaco, "Courier New", monospace;
+    }
+
+    code {
+      padding: 0.25em 0.5em;
+      font-size: 85%;
+      color: #bf616a;
+      background: var(--soft-bg);
+      border-radius: 3px;
+    }
+
+    pre {
+      display: block;
+      margin-top: 0;
+      margin-bottom: 1rem;
+      padding: 1rem;
+      font-size: 0.8rem;
+      line-height: 1.4;
+      overflow-x: auto;
+      background: var(--soft-bg);
+      border-radius: 4px;
+    }
+
+    pre code {
+      padding: 0;
+      color: inherit;
+      background: transparent;
+    }
+
+    blockquote {
+      padding: 0.5rem 1rem;
+      margin: 0.8rem 0;
+      color: var(--quote);
+      border-left: 0.25rem solid var(--quote-border);
+    }
+
+    blockquote p:last-child {
+      margin-bottom: 0;
+    }
+
+    img,
+    video {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      margin: 0 0 1rem;
+      border-radius: 5px;
+    }
+
+    .sidebar {
+      text-align: center;
+      padding: 2rem 1rem;
+      color: var(--sidebar-fg);
+      background: var(--sidebar-bg);
+    }
+
+    @media (min-width: 48em) {
+      .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: 18rem;
+        text-align: left;
+      }
+    }
+
+    .sidebar a {
+      color: var(--sidebar-link);
+    }
+
+    .sidebar-about h1 {
+      margin-top: 0;
+      color: #ffffff;
+      font-family: "Abril Fatface", serif;
+      font-size: 3.25rem;
+      line-height: 1.05;
+    }
+
+    .sidebar-about p {
+      font-size: 0.95rem;
+    }
+
+    .sidebar-nav {
+      margin-bottom: 1rem;
+    }
+
+    .sidebar-nav-item {
+      display: block;
+      line-height: 1.75;
+    }
+
+    @media (min-width: 48em) {
+      .sidebar-sticky {
+        position: absolute;
+        right: 1rem;
+        bottom: 1rem;
+        left: 1rem;
+      }
+    }
+
+    .content {
+      padding-top: 2rem;
+      padding-bottom: 4rem;
+      padding-left: 1rem;
+      padding-right: 1rem;
+    }
+
+    @media (min-width: 48em) {
+      .content {
+        max-width: 38rem;
+        margin-left: 20rem;
+        margin-right: 2rem;
+        padding-top: 4rem;
+      }
+    }
+
+    @media (min-width: 64em) {
+      .content {
+        margin-left: 22rem;
+        margin-right: 4rem;
+      }
+    }
+
+    article {
+      margin: 0 0 2rem;
+    }
+
+    article .meta {
+      margin-top: -0.25rem;
+      margin-bottom: 1.25rem;
+      color: #9a9a9a;
+      font-size: 0.9rem;
+    }
+
+    .post-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .post-list li {
+      margin: 0 0 1.75rem;
+      padding: 0;
+      background: transparent;
+      border-radius: 0;
+    }
+
+    .post-list .date {
+      margin: 0.35rem 0 0;
+      color: #9a9a9a;
+      font-size: 0.9rem;
+    }
+
+    .post-list .blurb {
+      margin: 0.5rem 0 0;
+      font-size: 0.95rem;
+    }
+
+    .post {
+      margin: 0 0 2rem;
+      padding: 0;
+      border: 0;
+    }
+
+    .post-date {
+      display: inline-block;
+      margin: 0 0 0.6rem;
+      color: #9a9a9a;
+      font-size: 0.9rem;
+    }
+
+    .post-date time {
+      color: inherit;
+    }
+
+    .post .e-content > :last-child {
+      margin-bottom: 0;
+    }
+
+    .post .e-content img {
+      max-width: min(100%, 22rem);
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .post.with-title h2 {
+      margin: 0;
+      font-size: 1.3rem;
+    }
+
+    .post.with-title .post-date {
+      margin-top: 0.2rem;
+    }
+
+    .h-feed {
+      margin-top: 1rem;
+    }
+
+    .h-feed .h-entry {
+      margin: 0 0 0.8rem;
+      font-size: 0.95rem;
+      line-height: 1.55;
+    }
+
+    .h-feed .h-entry time {
+      color: inherit;
+    }
+
+    .h-feed .p-summary {
+      color: var(--text);
+    }
+
+    footer {
+      margin-top: 2.5rem;
+      padding-top: 1.2rem;
+      color: #9a9a9a;
+      font-size: 0.85rem;
+      text-align: center;
+    }
+
+    footer p {
+      margin-bottom: 0.6rem;
+    }
+  </style>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="sidebar-sticky">
+      <div class="sidebar-about">
+        <h1><a href="{{ '/' | relative_url }}">Amit Kathuria</a></h1>
+        <p>{{ site.description }}</p>
+      </div>
+      <nav class="sidebar-nav">
+        <a class="sidebar-nav-item" href="{{ '/about.html' | relative_url }}">About</a>
+        <a class="sidebar-nav-item" href="{{ '/archive.html' | relative_url }}">Archive</a>
+        <a class="sidebar-nav-item" href="{{ '/feed.xml' | relative_url }}">RSS</a>
+      </nav>
+    </div>
+  </aside>
+  <div class="content">
+    <main>
+      {{ content }}
+    </main>
+    <footer>
+      <p>Built with Jekyll · <a href="https://github.com/amitkathuria/jekyll-test">Source</a></p>
+    </footer>
+  </div>
+</body>
+</html>
