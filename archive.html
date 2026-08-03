@@ -5,9 +5,14 @@ permalink: /archive.html
 ---
 <div class="h-feed">
   {% for post in site.posts %}
+  {% assign summary = post.content | strip_html | strip_newlines | strip %}
+  {% if summary == "" %}
+    {% assign first_image = post.content | split: '<img' | last %}
+    {% assign summary = first_image | split: 'alt="' | last | split: '"' | first | default: "[image]" %}
+  {% endif %}
   <p class="h-entry">
     <a href="{{ post.url | relative_url }}" class="u-url"><time class="dt-published" datetime="{{ post.date | date_to_xmlschema }}">{{ post.date | date: "%Y-%m-%d" }}</time></a>:
-    <span class="p-summary">{{ post.content | strip_html | strip_newlines | truncate: 80 }}</span>
+    <span class="p-summary">{{ summary | truncate: 80 }}</span>
   </p>
   {% endfor %}
 </div>
